@@ -11,12 +11,14 @@ M.buffers = {}
 M.create = function()
   local sessions = {}
   local id = 1
+  local lang
   for source_bufnr, asm_data in pairs(M.state) do
     if api.nvim_buf_is_loaded(source_bufnr) then
       local compilers = {}
       for asm_bufnr, data in pairs(asm_data) do
         if api.nvim_buf_is_loaded(asm_bufnr) then
-          table.insert(compilers, data)
+          lang = data.lang
+          table.insert(compilers, data.compiler)
         end
       end
 
@@ -24,7 +26,7 @@ M.create = function()
       local source = table.concat(lines, "\n")
 
       table.insert(sessions, {
-        language = compilers[1].lang,
+        language = lang,
         id = id,
         source = source,
         compilers = compilers,
@@ -38,12 +40,53 @@ M.create = function()
   return ce.base64.encode(json.encode({ sessions = sessions }))
 end
 
+
+------------------------------
+--- Body example:
+-----------------
+-- {
+--   allowStoreCodeDebug = true,
+--   compiler = {
+--     compilerType = "",
+--     id = "g141",
+--     instructionSet = "amd64",
+--     lang = "c++",
+--     name = "x86-64 gcc 14.1",
+--     semver = "14.1"
+--   },
+--   lang = "",
+--   options = {
+--     compilerOptions = {
+--       produceCfg = false,
+--       produceDevice = false,
+--       produceGccDump = {},
+--       produceLLVMOptPipeline = false,
+--       producePp = false
+--     },
+--     filters = {
+--       binary = false,
+--       commentOnly = true,
+--       demangle = true,
+--       directives = true,
+--       execute = true,
+--       intel = true,
+--       labels = true,
+--       libraryCode = true,
+--       trim = false
+--     },
+--     libraries = {},
+--     tools = {},
+--     userArguments = "-O1"
+--   },
+--   source = '#include<iostream>\n\nint foo(){\n  std::cout << "hello" << std::endl;\n  return 0;\n}'
+-- }
+
 M.save_info = function(source_bufnr, asm_bufnr, body)
   M.state[source_bufnr] = M.state[source_bufnr] or {}
 
   M.state[source_bufnr][asm_bufnr] = {
-    lang = body.lang,
-    id = body.compiler,
+    compiler = body.compiler,
+    lang = body.compiler.lang,
     options = body.options.userArguments,
     filters = body.options.filters,
     libs = vim.tbl_map(

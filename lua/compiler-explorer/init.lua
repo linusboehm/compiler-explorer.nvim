@@ -4,31 +4,64 @@ local api, fn = vim.api, vim.fn
 
 local M = {}
 
-local pick = function(items, on_confirm)
-  Snacks.picker({
-    items = vim.tbl_map(function(compiler)
-      return {
-        id = compiler.id,
-        text = string.format("%-20s - %s", compiler.id, compiler.name),
-        file = compiler.name,
-      }
-    end, items), -- these are set dynamically
-    layout = { preset = "select" },
-    title = "select compiler",
+-- ---@generic T
+-- ---@param items T[] Arbitrary items
+-- ---@param opts? {prompt?: string, format_item?: (fun(item: T): string), kind?: string}
+-- ---@param on_choice fun(item?: T, idx?: number)
+local function my_select(items, opts, on_choice)
+  assert(type(on_choice) == "function", "on_choice must be a function")
+  opts = opts or {}
+
+  ---@type snacks.picker.finder.Item[]
+  local finder_items = {}
+  for idx, item in ipairs(items) do
+    local text = (opts.format_item or tostring)(item)
+    table.insert(finder_items, {
+      formatted = text,
+      text = text,
+      item = item,
+      idx = idx,
+    })
+  end
+
+  local title = opts.prompt or "Select"
+  title = title:gsub("^%s*", ""):gsub("[%s:]*$", "")
+  local completed = false
+
+  ---@type snacks.picker.finder.Item[]
+  return Snacks.picker.pick({
+    source = "select",
+    items = finder_items,
     format = "text",
-    confirm = function(picker, item)
-      picker:close()
-      on_confirm(item)
+    title = title,
+    actions = {
+      confirm = function(picker, item)
+        if completed then
+          return
+        end
+        completed = true
+        picker:close()
+        vim.schedule(function()
+          on_choice(item and item.item, item and item.idx)
+        end)
+      end,
+    },
+    on_close = function()
+      if completed then
+        return
+      end
+      completed = true
+      vim.schedule(on_choice)
     end,
   })
 end
 
 -- Return a function to avoid caching the vim.ui functions
 local get_select = function()
-  return ce.async.wrap(vim.ui.select, 3)
+  return ce.async.wrap(my_select, 3)
 end
 local get_input = function()
-  return ce.async.wrap(vim.ui.input, 2)
+  return ce.async.wrap(Snacks.input.input, 2)
 end
 
 M.setup = function(user_config)
@@ -81,7 +114,7 @@ end
 ---@field default_flags? string
 ---@field lang? string
 ---@field out_buf? integer
----@field on_opts_callback? function
+---@field on_selected? function
 
 ---@param opts ce.compile.config
 ---@param live? boolean
@@ -100,10 +133,6 @@ M.compile = ce.async.void(function(opts, live)
 
   -- Get buffer number of the source code buffer.
   local source_bufnr = api.nvim_get_current_buf()
-
-  -- Get contents of the selected lines.
-  local buf_contents = api.nvim_buf_get_lines(source_bufnr, opts.line1 - 1, opts.line2, false)
-  args.source = table.concat(buf_contents, "\n")
 
   if not opts.compiler or not opts.compiler.id then
     if not opts.lang then
@@ -129,7 +158,7 @@ M.compile = ce.async.void(function(opts, live)
       else
         -- Choose language
         lang = vim_select(possible_langs, {
-          prompt = "Select language> ",
+          prompt = "Select language",
           format_item = function(item)
             return item.name
           end,
@@ -154,21 +183,18 @@ M.compile = ce.async.void(function(opts, live)
     else
       -- Choose compiler
       local compilers = ce.rest.compilers_get(opts.lang)
-      -- local set_opts = function (item)
-      --   Snacks.notify.info("setting compiler to " .. item.id)
-      --   opts.compiler = item.id
-      --   Snacks.debug.inspect(opts)
-      --   -- api.nvim_set_current_win(source_winnr)
-      -- end
-      -- pick(compilers, set_opts)
       opts.compiler = vim_select(compilers, {
-        prompt = "Select compiler> ",
+        prompt = "Select compiler",
         format_item = function(item)
           return string.format("%-20s - %s", item.id, item.name)
         end,
       })
 
       if not opts.compiler then
+        if opts.on_selected then
+          opts.on_selected(opts, false)
+        end
+        api.nvim_set_current_win(source_winnr)
         return
       end
       vim.cmd("redraw")
@@ -176,29 +202,36 @@ M.compile = ce.async.void(function(opts, live)
   end
 
   if not opts.compiler.instructionSet then
+    local ok
     ok, opts.compiler = pcall(ce.rest.check_compiler, opts.compiler.id)
     if not ok then
       ce.alert.error("Could not compile code with compiler id %s", opts.compiler.id)
+      if opts.on_selected then
+        opts.on_selected(opts, false)
+      end
       return
     end
   end
-  args.compiler = opts.compiler
 
   -- Choose compiler options
-  if opts.flags then
-    args.flags = opts.flags
-  else
-    args.flags = vim_input({
+  if not opts.flags then
+    opts.flags = vim_input({
       prompt = "Select compiler options> ",
       default = opts.default_flags,
-    })
+    }) or ""
     vim.cmd("redraw")
-    opts.flags = args.flags
   end
 
-  if opts.on_opts_callback then
-    opts.on_opts_callback(opts)
+  if opts.on_selected then
+    opts.on_selected(opts, true)
   end
+
+  args.compiler = opts.compiler
+  args.flags = opts.flags
+
+  -- Get contents of the selected lines.
+  local buf_contents = api.nvim_buf_get_lines(source_bufnr, opts.line1 - 1, opts.line2, false)
+  args.source = table.concat(buf_contents, "\n")
 
   ce.async.scheduler()
 
@@ -278,19 +311,9 @@ end)
 
 -- WARN: Experimental
 M.open_website = function()
-  local cmd
-  if fn.executable("xdg-open") == 1 then
-    cmd = "!xdg-open"
-  elseif fn.executable("open") == 1 then
-    cmd = "!open"
-  elseif fn.executable("wslview") == 1 then
-    cmd = "!wslview"
-  else
-    ce.alert.warn("CEOpenWebsite is not supported.")
-    return
-  end
-
   local conf = ce.config.get_config()
+  Snacks.debug.inspect(conf)
+  conf.language = "c++"
 
   local state = ce.clientstate.create()
   if state == nil then
@@ -299,7 +322,14 @@ M.open_website = function()
   end
 
   local url = table.concat({ conf.url, "clientstate", state }, "/")
-  vim.cmd(table.concat({ "silent", cmd, url }, " "))
+
+  Snacks.notify(("url: [%s]"):format(url), { title = "Godbolt Browse" })
+  vim.fn.setreg("+", url)
+  if vim.fn.has("nvim-0.10") == 0 then
+    require("lazy.util").open(url, { system = true })
+    return
+  end
+  -- vim.ui.open(url)
 end
 
 M.add_library = ce.async.void(function()
@@ -324,7 +354,7 @@ M.add_library = ce.async.void(function()
   else
     -- Choose language
     lang = vim_select(possible_langs, {
-      prompt = "Select language> ",
+      prompt = "Select language",
       format_item = function(item)
         return item.name
       end,
@@ -344,7 +374,7 @@ M.add_library = ce.async.void(function()
 
   -- Choose library
   local lib = vim_select(libs, {
-    prompt = "Select library> ",
+    prompt = "Select library",
     format_item = function(item)
       return item.name
     end,
@@ -357,7 +387,7 @@ M.add_library = ce.async.void(function()
 
   -- Choose version
   local version = vim_select(lib.versions, {
-    prompt = "Select library version> ",
+    prompt = "Select library version",
     format_item = function(item)
       return item.version
     end,
@@ -383,7 +413,7 @@ M.format = ce.async.void(function()
   -- Select formatter
   local formatters = ce.rest.formatters_get()
   local formatter = vim_select(formatters, {
-    prompt = "Select formatter> ",
+    prompt = "Select formatter",
     format_item = function(item)
       return item.name
     end,
@@ -396,7 +426,7 @@ M.format = ce.async.void(function()
   local style = formatter.styles[1] or "__DefaultStyle"
   if #formatter.styles > 0 then
     style = vim_select(formatter.styles, {
-      prompt = "Select formatter style> ",
+      prompt = "Select formatter style",
       format_item = function(item)
         return item
       end,
@@ -474,7 +504,7 @@ M.load_example = ce.async.void(function()
   table.sort(langs)
 
   local lang_id = vim_select(langs, {
-    prompt = "Select language> ",
+    prompt = "Select language",
     format_item = function(item)
       return item
     end,
@@ -486,7 +516,7 @@ M.load_example = ce.async.void(function()
   vim.cmd("redraw")
 
   local example = vim_select(examples_by_lang[lang_id], {
-    prompt = "Select example> ",
+    prompt = "Select example",
     format_item = function(item)
       return item.name
     end,
