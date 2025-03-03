@@ -309,19 +309,13 @@ M.compile = ce.async.void(function(opts, live)
   return opts
 end)
 
--- WARN: Experimental
-M.open_website = function()
-  local conf = ce.config.get_config()
-  Snacks.debug.inspect(conf)
-  conf.language = "c++"
-
-  local state = ce.clientstate.create()
-  if state == nil then
-    ce.alert.warn("No compiler configurations were found. Run :CECompile before this.")
-    return
+M.open_website = ce.async.void(function()
+  local body = ce.clientstate.create()
+  local ok, response = pcall(ce.rest.shortener_post, body)
+  if not ok then
+    ce.alert.error(response)
   end
-
-  local url = table.concat({ conf.url, "clientstate", state }, "/")
+  local url = response.url
 
   Snacks.notify(("url: [%s]"):format(url), { title = "Godbolt Browse" })
   vim.fn.setreg("+", url)
@@ -329,8 +323,8 @@ M.open_website = function()
     require("lazy.util").open(url, { system = true })
     return
   end
-  -- vim.ui.open(url)
-end
+  -- -- vim.ui.open(url)
+end)
 
 M.add_library = ce.async.void(function()
   local vim_select = get_select()

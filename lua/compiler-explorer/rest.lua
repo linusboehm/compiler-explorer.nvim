@@ -152,6 +152,13 @@ M.compile_post = function(compiler_id, req_body)
   return post(url, req_body, "Compiling")
 end
 
+M.shortener_post = function(req_body)
+  local conf = ce.config.get_config()
+  local url = table.concat({ conf.url, "api", "shortener" }, "/")
+
+  return post(url, req_body, "Short url")
+end
+
 M.list_examples_get = function()
   local conf = ce.config.get_config()
   local url = table.concat({ conf.url, "source", "builtin", "list" }, "/")

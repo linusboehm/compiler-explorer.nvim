@@ -1,7 +1,6 @@
 local ce = require("compiler-explorer.lazy")
 
 local api, fn = vim.api, vim.fn
-local json = vim.json
 
 local M = {}
 
@@ -18,6 +17,7 @@ M.create = function()
       for asm_bufnr, data in pairs(asm_data) do
         if api.nvim_buf_is_loaded(asm_bufnr) then
           lang = data.lang
+          data.compiler.options = data.options
           table.insert(compilers, data.compiler)
         end
       end
@@ -35,11 +35,11 @@ M.create = function()
     end
   end
 
-  if vim.tbl_isempty(sessions) then return nil end
-
-  return ce.base64.encode(json.encode({ sessions = sessions }))
+  if vim.tbl_isempty(sessions) then
+    return nil
+  end
+  return { sessions = sessions }
 end
-
 
 ------------------------------
 --- Body example:
@@ -89,17 +89,18 @@ M.save_info = function(source_bufnr, asm_bufnr, body)
     lang = body.compiler.lang,
     options = body.options.userArguments,
     filters = body.options.filters,
-    libs = vim.tbl_map(
-      function(lib) return { name = lib.id, ver = lib.version } end,
-      body.options.libraries
-    ),
+    libs = vim.tbl_map(function(lib)
+      return { name = lib.id, ver = lib.version }
+    end, body.options.libraries),
   }
 end
 
 M.get_last_bufwinid = function(source_bufnr)
   for _, asm_buffer in ipairs(vim.tbl_keys(M.state[source_bufnr] or {})) do
     local winid = fn.bufwinid(asm_buffer)
-    if winid ~= -1 then return winid end
+    if winid ~= -1 then
+      return winid
+    end
   end
   return nil
 end
