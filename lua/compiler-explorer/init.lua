@@ -4,17 +4,95 @@ local api, fn = vim.api, vim.fn
 
 local M = {}
 
+local pick = function(items, on_confirm)
+  Snacks.picker({
+    items = vim.tbl_map(function(compiler)
+      return {
+        id = compiler.id,
+        text = string.format("%-20s - %s", compiler.id, compiler.name),
+        file = compiler.name,
+      }
+    end, items), -- these are set dynamically
+    layout = { preset = "select" },
+    title = "select compiler",
+    format = "text",
+    confirm = function(picker, item)
+      picker:close()
+      on_confirm(item)
+    end,
+  })
+end
+
 -- Return a function to avoid caching the vim.ui functions
-local get_select = function() return ce.async.wrap(vim.ui.select, 3) end
-local get_input = function() return ce.async.wrap(vim.ui.input, 2) end
+local get_select = function()
+  return ce.async.wrap(vim.ui.select, 3)
+end
+local get_input = function()
+  return ce.async.wrap(vim.ui.input, 2)
+end
 
-M.setup = function(user_config) ce.config.setup(user_config or {}) end
+M.setup = function(user_config)
+  ce.config.setup(user_config or {})
+end
 
+---@param out_buf integer
+local function display_output(response, out_buf)
+  local function collect_output(output)
+    local result = {}
+    for _, v in pairs(output) do
+      if v.text then
+        table.insert(result, v.text)
+      end
+    end
+    return result
+  end
+
+  local stdout = collect_output(response.stdout)
+  local stderr = collect_output(response.stderr)
+  stdout = (stdout and next(stdout) ~= nil) and stdout or { "---" }
+  stderr = (stderr and next(stderr) ~= nil) and stderr or { "---" }
+
+  local lines = {
+    "exit code: " .. response.code,
+    "stdout:",
+    table.unpack(stdout),
+    "stderr:",
+    table.unpack(stderr),
+  }
+  vim.api.nvim_buf_set_lines(out_buf, 0, -1, false, lines)
+end
+
+---@class ce.compile.compiler
+---@field compilerType string
+---@field id string
+---@field instructionSet string
+---@field lang string
+---@field name string
+---@field semver string
+
+---@class ce.compile.config
+---@field line1 integer
+---@field line2 integer
+---@field asm_buf? integer
+---@field bang? boolean
+---@field compiler? ce.compile.compiler
+---@field fargs? table
+---@field flags? string
+---@field default_flags? string
+---@field lang? string
+---@field out_buf? integer
+---@field on_opts_callback? function
+
+---@param opts ce.compile.config
+---@param live? boolean
 M.compile = ce.async.void(function(opts, live)
+  opts = opts or {}
+  opts.fargs = opts.fargs or {}
   local conf = ce.config.get_config()
   local vim_select = get_select()
   local vim_input = get_input()
 
+  -- parse arg=val type of stuff
   local args = ce.util.parse_args(opts.fargs)
 
   -- Get window handle of the source code window.
@@ -24,89 +102,105 @@ M.compile = ce.async.void(function(opts, live)
   local source_bufnr = api.nvim_get_current_buf()
 
   -- Get contents of the selected lines.
-  local buf_contents =
-    api.nvim_buf_get_lines(source_bufnr, opts.line1 - 1, opts.line2, false)
+  local buf_contents = api.nvim_buf_get_lines(source_bufnr, opts.line1 - 1, opts.line2, false)
   args.source = table.concat(buf_contents, "\n")
 
-  local ok, compiler = pcall(ce.rest.check_compiler, args.compiler)
-  if not ok then
-    ce.alert.error("Could not compile code with compiler id %s", args.compiler)
-    return
-  end
+  if not opts.compiler or not opts.compiler.id then
+    if not opts.lang then
+      local lang
+      local lang_list = ce.rest.languages_get()
+      local possible_langs = lang_list
+      -- Infer language based on extension and prompt user.
+      if args.inferLang then
+        local extension = "." .. fn.expand("%:e")
 
-  local lang
-  if not compiler then
-    local lang_list = ce.rest.languages_get()
-    local possible_langs = lang_list
+        possible_langs = vim.tbl_filter(function(el)
+          return vim.tbl_contains(el.extensions, extension)
+        end, lang_list)
 
-    -- Infer language based on extension and prompt user.
-    if args.inferLang then
-      local extension = "." .. fn.expand("%:e")
+        if vim.tbl_isempty(possible_langs) then
+          ce.alert.error("File extension %s not supported by compiler-explorer", extension)
+          return
+        end
+      end
 
-      possible_langs = vim.tbl_filter(
-        function(el) return vim.tbl_contains(el.extensions, extension) end,
-        lang_list
-      )
+      if #possible_langs == 1 then
+        lang = possible_langs[1]
+      else
+        -- Choose language
+        lang = vim_select(possible_langs, {
+          prompt = "Select language> ",
+          format_item = function(item)
+            return item.name
+          end,
+        })
+      end
 
-      if vim.tbl_isempty(possible_langs) then
-        ce.alert.error(
-          "File extension %s not supported by compiler-explorer",
-          extension
-        )
+      if not lang then
         return
       end
+      vim.cmd("redraw")
+      opts.lang = lang.id
     end
-
-    if #possible_langs == 1 then
-      lang = possible_langs[1]
-    else
-      -- Choose language
-      lang = vim_select(possible_langs, {
-        prompt = "Select language> ",
-        format_item = function(item) return item.name end,
-      })
-    end
-
-    if not lang then return end
-    vim.cmd("redraw")
 
     -- Extend config with config specific to the language
-    local lang_conf = conf.languages[lang.id]
-    if lang_conf then conf = vim.tbl_deep_extend("force", conf, lang_conf) end
-
-    if conf.compiler then
-      ok, compiler = pcall(ce.rest.check_compiler, conf.compiler)
-      if not ok then
-        ce.alert.error(
-          "Could not compile code with compiler id %s",
-          conf.compiler
-        )
-        return
-      end
-    else
-      -- Choose compiler
-      local compilers = ce.rest.compilers_get(lang.id)
-      compiler = vim_select(compilers, {
-        prompt = "Select compiler> ",
-        format_item = function(item) return item.name end,
-      })
-
-      if not compiler then return end
-      vim.cmd("redraw")
+    local lang_conf = conf.languages[opts.lang]
+    if lang_conf then
+      conf = vim.tbl_deep_extend("force", conf, lang_conf)
     end
 
-    -- Choose compiler options
+    if conf.compiler then
+      opts.compiler.id = conf.compiler
+    else
+      -- Choose compiler
+      local compilers = ce.rest.compilers_get(opts.lang)
+      -- local set_opts = function (item)
+      --   Snacks.notify.info("setting compiler to " .. item.id)
+      --   opts.compiler = item.id
+      --   Snacks.debug.inspect(opts)
+      --   -- api.nvim_set_current_win(source_winnr)
+      -- end
+      -- pick(compilers, set_opts)
+      opts.compiler = vim_select(compilers, {
+        prompt = "Select compiler> ",
+        format_item = function(item)
+          return string.format("%-20s - %s", item.id, item.name)
+        end,
+      })
+
+      if not opts.compiler then
+        return
+      end
+      vim.cmd("redraw")
+    end
+  end
+
+  if not opts.compiler.instructionSet then
+    ok, opts.compiler = pcall(ce.rest.check_compiler, opts.compiler.id)
+    if not ok then
+      ce.alert.error("Could not compile code with compiler id %s", opts.compiler.id)
+      return
+    end
+  end
+  args.compiler = opts.compiler
+
+  -- Choose compiler options
+  if opts.flags then
+    args.flags = opts.flags
+  else
     args.flags = vim_input({
       prompt = "Select compiler options> ",
-      default = conf.compiler_flags,
+      default = opts.default_flags,
     })
     vim.cmd("redraw")
-    args.compiler = compiler
+    opts.flags = args.flags
+  end
+
+  if opts.on_opts_callback then
+    opts.on_opts_callback(opts)
   end
 
   ce.async.scheduler()
-
-  args.lang = compiler.lang
 
   if live then
     api.nvim_create_autocmd({ "BufWritePost" }, {
@@ -127,30 +221,39 @@ M.compile = ce.async.void(function(opts, live)
 
   -- Compile
   local body = ce.rest.create_compile_body(args)
-  local response
-  ok, response = pcall(ce.rest.compile_post, compiler.id, body)
+  local ok, response = pcall(ce.rest.compile_post, args.compiler.id, body)
 
-  if not ok then ce.alert.error(response) end
+  if not ok then
+    ce.alert.error(response)
+  end
 
-  local asm_lines = vim.tbl_map(
-    function(line) return line.text end,
-    response.asm
-  )
+  local asm_lines = vim.tbl_map(function(line)
+    return line.text
+  end, response.asm)
 
-  local asm_bufnr =
-    ce.util.create_window_buffer(source_bufnr, compiler.id, opts.bang)
+  -- opts.asm_buf = opts.asm_buf or nil
+  local asm_bufnr = opts.asm_buf or ce.util.create_window_buffer(source_bufnr, args.compiler.id, opts.bang)
   api.nvim_buf_clear_namespace(asm_bufnr, -1, 0, -1)
 
   api.nvim_buf_set_option(asm_bufnr, "modifiable", true)
   api.nvim_buf_set_lines(asm_bufnr, 0, -1, false, asm_lines)
 
-  if response.code == 0 then
-    ce.alert.info("Compilation done with %s compiler.", compiler.name)
-  else
-    ce.alert.error("Could not compile code with %s", compiler.name)
+  if response.code ~= 0 then
+    ce.alert.error("Could not compile code with %s", args.compiler.name)
   end
 
-  if args.binary then ce.util.set_binary_extmarks(response.asm, asm_bufnr) end
+  if response.stderr then
+    local lines = ce.stderr.get_diagnostics(response.stderr, source_bufnr, opts.line1 - 1)
+    if #lines > 0 then
+      vim.api.nvim_buf_set_lines(opts.out_buf, 0, -1, false, lines)
+    elseif response.execResult then
+      display_output(response.execResult, opts.out_buf)
+    end
+  end
+
+  if args.binary then
+    ce.util.set_binary_extmarks(response.asm, asm_bufnr)
+  end
 
   -- Return to source window
   api.nvim_set_current_win(source_winnr)
@@ -160,26 +263,17 @@ M.compile = ce.async.void(function(opts, live)
   ce.stderr.add_diagnostics(response.stderr, source_bufnr, opts.line1 - 1)
 
   if not args.binary then
-    ce.autocmd.init_line_match(
-      source_bufnr,
-      asm_bufnr,
-      response.asm,
-      opts.line1 - 1
-    )
+    ce.autocmd.init_line_match(source_bufnr, asm_bufnr, response.asm, opts.line1 - 1)
   end
 
   ce.clientstate.save_info(source_bufnr, asm_bufnr, body)
 
-  api.nvim_buf_set_var(asm_bufnr, "arch", compiler.instructionSet) -- used by show_tooltips
+  api.nvim_buf_set_var(asm_bufnr, "arch", args.compiler.instructionSet) -- used by show_tooltips
   api.nvim_buf_set_var(asm_bufnr, "labels", response.labelDefinitions) -- used by goto_label
 
-  api.nvim_buf_create_user_command(
-    asm_bufnr,
-    "CEShowTooltip",
-    M.show_tooltip,
-    {}
-  )
+  api.nvim_buf_create_user_command(asm_bufnr, "CEShowTooltip", M.show_tooltip, {})
   api.nvim_buf_create_user_command(asm_bufnr, "CEGotoLabel", M.goto_label, {})
+  return opts
 end)
 
 -- WARN: Experimental
@@ -200,9 +294,7 @@ M.open_website = function()
 
   local state = ce.clientstate.create()
   if state == nil then
-    ce.alert.warn(
-      "No compiler configurations were found. Run :CECompile before this."
-    )
+    ce.alert.warn("No compiler configurations were found. Run :CECompile before this.")
     return
   end
 
@@ -217,16 +309,12 @@ M.add_library = ce.async.void(function()
   -- Infer language based on extension and prompt user.
   local extension = "." .. fn.expand("%:e")
 
-  local possible_langs = vim.tbl_filter(
-    function(el) return vim.tbl_contains(el.extensions, extension) end,
-    lang_list
-  )
+  local possible_langs = vim.tbl_filter(function(el)
+    return vim.tbl_contains(el.extensions, extension)
+  end, lang_list)
 
   if vim.tbl_isempty(possible_langs) then
-    ce.alert.error(
-      "File extension %s not supported by compiler-explorer.",
-      extension
-    )
+    ce.alert.error("File extension %s not supported by compiler-explorer.", extension)
     return
   end
 
@@ -237,11 +325,15 @@ M.add_library = ce.async.void(function()
     -- Choose language
     lang = vim_select(possible_langs, {
       prompt = "Select language> ",
-      format_item = function(item) return item.name end,
+      format_item = function(item)
+        return item.name
+      end,
     })
   end
 
-  if not lang then return end
+  if not lang then
+    return
+  end
   vim.cmd("redraw")
 
   local libs = ce.rest.libraries_get(lang.id)
@@ -253,27 +345,31 @@ M.add_library = ce.async.void(function()
   -- Choose library
   local lib = vim_select(libs, {
     prompt = "Select library> ",
-    format_item = function(item) return item.name end,
+    format_item = function(item)
+      return item.name
+    end,
   })
 
-  if not lib then return end
+  if not lib then
+    return
+  end
   vim.cmd("redraw")
 
   -- Choose version
   local version = vim_select(lib.versions, {
     prompt = "Select library version> ",
-    format_item = function(item) return item.version end,
+    format_item = function(item)
+      return item.version
+    end,
   })
 
-  if not version then return end
+  if not version then
+    return
+  end
   vim.cmd("redraw")
 
   -- Add lib to buffer variable, overwriting previous library version if already present
-  vim.b.libs = vim.tbl_deep_extend(
-    "force",
-    vim.b.libs or {},
-    { [lib.id] = version.version }
-  )
+  vim.b.libs = vim.tbl_deep_extend("force", vim.b.libs or {}, { [lib.id] = version.version })
 
   ce.alert.info("Added library %s version %s", lib.name, version.version)
 end)
@@ -288,19 +384,27 @@ M.format = ce.async.void(function()
   local formatters = ce.rest.formatters_get()
   local formatter = vim_select(formatters, {
     prompt = "Select formatter> ",
-    format_item = function(item) return item.name end,
+    format_item = function(item)
+      return item.name
+    end,
   })
-  if not formatter then return end
+  if not formatter then
+    return
+  end
   vim.cmd("redraw")
 
   local style = formatter.styles[1] or "__DefaultStyle"
   if #formatter.styles > 0 then
     style = vim_select(formatter.styles, {
       prompt = "Select formatter style> ",
-      format_item = function(item) return item end,
+      format_item = function(item)
+        return item
+      end,
     })
 
-    if not style then return end
+    if not style then
+      return
+    end
     vim.cmd("redraw")
   end
 
@@ -322,8 +426,7 @@ M.format = ce.async.void(function()
 end)
 
 M.show_tooltip = ce.async.void(function()
-  local ok, response =
-    pcall(ce.rest.tooltip_get, vim.b.arch, fn.expand("<cword>"))
+  local ok, response = pcall(ce.rest.tooltip_get, vim.b.arch, fn.expand("<cword>"))
   if not ok then
     ce.alert.error(response)
     return
@@ -333,6 +436,7 @@ M.show_tooltip = ce.async.void(function()
     wrap = true,
     close_events = { "CursorMoved" },
     border = "single",
+    zindex = 1000, -- Set a high zindex value to ensure it is on top
   })
 end)
 
@@ -371,24 +475,29 @@ M.load_example = ce.async.void(function()
 
   local lang_id = vim_select(langs, {
     prompt = "Select language> ",
-    format_item = function(item) return item end,
+    format_item = function(item)
+      return item
+    end,
   })
 
-  if not lang_id then return end
+  if not lang_id then
+    return
+  end
   vim.cmd("redraw")
 
   local example = vim_select(examples_by_lang[lang_id], {
     prompt = "Select example> ",
-    format_item = function(item) return item.name end,
+    format_item = function(item)
+      return item.name
+    end,
   })
   local response = ce.rest.load_example_get(lang_id, example.file)
   local lines = vim.split(response.file, "\n")
 
   langs = ce.rest.languages_get()
-  local filtered = vim.tbl_filter(
-    function(el) return el.id == lang_id end,
-    langs
-  )
+  local filtered = vim.tbl_filter(function(el)
+    return el.id == lang_id
+  end, langs)
   local extension = filtered[1].extensions[1]
   local bufname = example.file .. extension
 

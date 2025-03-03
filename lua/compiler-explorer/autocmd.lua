@@ -108,6 +108,7 @@ M.init_line_match = function(source_bufnr, asm_bufnr, resp, offset)
       api.nvim_clear_autocmds({ group = gid })
     end,
   })
+  line_match_cb(asm_bufnr, source_to_asm)
 end
 
 return M
