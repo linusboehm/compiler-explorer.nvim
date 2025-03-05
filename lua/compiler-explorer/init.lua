@@ -92,7 +92,9 @@ local function display_output(response, out_buf)
     "stderr:",
     table.unpack(stderr),
   }
+  api.nvim_set_option_value("modifiable", true, { buf = out_buf })
   vim.api.nvim_buf_set_lines(out_buf, 0, -1, false, lines)
+  api.nvim_set_option_value("modifiable", false, { buf = out_buf })
 end
 
 ---@class ce.compile.compiler
@@ -268,7 +270,7 @@ M.compile = ce.async.void(function(opts, live)
   local asm_bufnr = opts.asm_buf or ce.util.create_window_buffer(source_bufnr, args.compiler.id, opts.bang)
   api.nvim_buf_clear_namespace(asm_bufnr, -1, 0, -1)
 
-  api.nvim_buf_set_option(asm_bufnr, "modifiable", true)
+  api.nvim_set_option_value("modifiable", true, { buf = asm_bufnr })
   api.nvim_buf_set_lines(asm_bufnr, 0, -1, false, asm_lines)
 
   if response.code ~= 0 then
@@ -291,7 +293,7 @@ M.compile = ce.async.void(function(opts, live)
   -- Return to source window
   api.nvim_set_current_win(source_winnr)
 
-  api.nvim_buf_set_option(asm_bufnr, "modifiable", false)
+  api.nvim_set_option_value("modifiable", false, { buf = asm_bufnr })
 
   ce.stderr.add_diagnostics(response.stderr, source_bufnr, opts.line1 - 1)
 
