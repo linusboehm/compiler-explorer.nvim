@@ -88,10 +88,18 @@ local function display_output(response, out_buf)
   local lines = {
     "exit code: " .. response.code,
     "stdout:",
-    table.unpack(stdout),
-    "stderr:",
-    table.unpack(stderr),
   }
+
+  for _, line in ipairs(stdout) do
+    table.insert(lines, line)
+  end
+
+  table.insert(lines, "stderr:")
+
+  for _, line in ipairs(stderr) do
+    table.insert(lines, line)
+  end
+
   vim.api.nvim_buf_set_lines(out_buf, 0, -1, false, lines)
 end
 
