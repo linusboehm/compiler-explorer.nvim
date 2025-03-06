@@ -78,18 +78,19 @@ function M.start_spinner(text)
   local interval = 100
 
   local i = 1
-  M.timer = uv.new_timer()
-  M.timer:start(0, interval, function()
+  timer = uv.new_timer()
+  timer:start(0, interval, function()
     i = (i == #frames) and 1 or (i + 1)
     local msg = text .. " " .. frames[i]
     vim.schedule(function() api.nvim_echo({ { msg, "None" } }, false, {}) end)
   end)
+  return timer
 end
 
-function M.stop_spinner()
+function M.stop_spinner(timer)
   api.nvim_echo({ { "", "None" } }, false, {})
-  M.timer:stop()
-  M.timer:close()
+  timer:stop()
+  timer:close()
 end
 
 return M

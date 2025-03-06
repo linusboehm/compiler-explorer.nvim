@@ -11,9 +11,9 @@ local get = function(url)
 end
 
 local post = function(url, req_body, spinner_text)
-  ce.util.start_spinner(spinner_text)
+  local timer = ce.util.start_spinner(spinner_text)
   local ok, status, body = pcall(ce.http.post, url, req_body)
-  ce.util.stop_spinner()
+  ce.util.stop_spinner(timer)
 
   if not ok then error(status) end
 
