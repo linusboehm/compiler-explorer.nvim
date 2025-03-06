@@ -92,9 +92,7 @@ local function display_output(response, out_buf)
     "stderr:",
     table.unpack(stderr),
   }
-  api.nvim_set_option_value("modifiable", true, { buf = out_buf })
   vim.api.nvim_buf_set_lines(out_buf, 0, -1, false, lines)
-  api.nvim_set_option_value("modifiable", false, { buf = out_buf })
 end
 
 ---@class ce.compile.compiler
@@ -278,12 +276,14 @@ M.compile = ce.async.void(function(opts, live)
   end
 
   if response.stderr then
+    api.nvim_set_option_value("modifiable", true, { buf = opts.out_buf })
     local lines = ce.stderr.get_diagnostics(response.stderr, source_bufnr, opts.line1 - 1)
     if #lines > 0 then
       vim.api.nvim_buf_set_lines(opts.out_buf, 0, -1, false, lines)
     elseif response.execResult then
       display_output(response.execResult, opts.out_buf)
     end
+    api.nvim_set_option_value("modifiable", false, { buf = opts.out_buf })
   end
 
   if args.binary then
